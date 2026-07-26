@@ -204,6 +204,7 @@ class Service:
     type: str | None
     server_status: dict[str, str]
     used_by: tuple[str, ...]
+    has_health_check: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -211,19 +212,16 @@ class Service:
         return self.status == STATUS_ENABLED
 
     @property
-    def has_health_check(self) -> bool:
-        """Whether Traefik is actively probing this service's servers.
-
-        Without a ``loadBalancer.healthCheck`` in the configuration Traefik
-        never reports a server as down, so ``all_servers_up`` only means
-        something when this is true.
-        """
-        return bool(self.server_status)
-
-    @property
     def all_servers_up(self) -> bool | None:
-        """Whether every probed server is up, or ``None`` if none are probed."""
-        if not self.server_status:
+        """Whether every probed server is up, or ``None`` if none are probed.
+
+        Traefik reports ``serverStatus`` for every service, but only ever
+        writes ``DOWN`` into it for a service with a
+        ``loadBalancer.healthCheck``. Everything else reads ``UP`` forever,
+        including servers that are switched off — so without a health check
+        this is unknown rather than a clean bill of health.
+        """
+        if not self.has_health_check or not self.server_status:
             return None
         return all(state == SERVER_UP for state in self.server_status.values())
 
@@ -232,6 +230,7 @@ class Service:
         """Build from an entry of ``/api/http/services``."""
         server_status = data.get("serverStatus")
         used_by = data.get("usedBy") or []
+        load_balancer = data.get("loadBalancer")
         return cls(
             name=str(data.get("name", "")),
             status=str(data.get("status", "")),
@@ -243,6 +242,9 @@ class Service:
                 else {}
             ),
             used_by=tuple(str(u) for u in used_by),
+            has_health_check=bool(
+                isinstance(load_balancer, dict) and load_balancer.get("healthCheck")
+            ),
         )
 
 

@@ -82,7 +82,10 @@ per-route latency histograms and is skipped.
 probing a service's backends. Traefik only marks a server down when the
 configuration gives that service a `loadBalancer.healthCheck`; without one it
 reports every server as up forever, including servers that are switched off.
-Check `Service.has_health_check` before you trust the answer.
+
+Note that a populated `serverStatus` is *not* evidence of probing — Traefik
+fills it in either way. `Service.has_health_check` reads the service's
+`loadBalancer.healthCheck` instead, which is the only honest signal.
 
 ## Errors
 
