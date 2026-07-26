@@ -33,7 +33,8 @@ async def main() -> None:
         print(overview.http_routers.errors, "with errors")
 
         for router in await client.list_routers():
-            print(router.name, router.rule, router.status)
+            # ``hostnames`` pulls the literal Host(...) values out of the rule.
+            print(router.hostnames or router.name, router.status)
 
 
 asyncio.run(main())
@@ -66,15 +67,37 @@ client = TraefikClient(
 )
 metrics = await client.get_metrics()
 
-print(metrics.open_connections)
+print(metrics.open_connections, metrics.connections_by_entrypoint)
 print(metrics.last_reload)
+
+total = metrics.totals()
+print(total.requests, "requests", total.error_rate, "% errors")
+
+for name, stats in metrics.services.items():
+    print(name, stats.requests, stats.errors, stats.average_duration)
+
 for cert in metrics.certificates:
-    print(cert.common_name, cert.days_remaining, "days left")
+    print(cert.common_name, cert.sans, cert.days_remaining, "days left")
+
+# Tightest match wins: an exact subject beats a wildcard that also covers it.
+print(metrics.certificate_for("git.example.com"))
 ```
 
-Only four metric families are read — open connections, config reloads, last
-successful reload, and per-certificate expiry. The rest of Traefik's output is
-per-route latency histograms and is skipped.
+Ten metric families are read: open connections, config reloads, last
+successful reload, per-certificate expiry, and request counts and durations
+per service and per entrypoint. The latency *histograms* are skipped — they
+are the bulk of the output and say little that the totals do not.
+
+There are no per-router metrics to read. Traefik can label them
+(`addRoutersLabels`) but does not by default, so per-route figures are best
+obtained through the service a router forwards to. Note that a router names
+its service without the provider suffix (`foo`) while the metrics use the
+qualified name (`foo@file`).
+
+`TrafficStats.error_rate` and `average_duration` are lifetime figures derived
+from counters, and `None` rather than zero when a service has seen no traffic.
+Responses Traefik reports with `code="0"` — websocket upgrades that never
+produced a status — are counted as requests but not as errors.
 
 ## A note on `serverStatus`
 

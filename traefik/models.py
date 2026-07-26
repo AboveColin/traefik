@@ -8,7 +8,8 @@ next. A missing value becomes ``None`` rather than a guess.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -23,7 +24,13 @@ __all__ = [
     "SectionCounts",
     "ServerInfo",
     "Service",
+    "TrafficStats",
 ]
+
+# Host(`a`, `b`), HostSNI(`a`) and HostRegexp(`^…$`) all take backticked
+# arguments, and a rule may chain several of them with && / ||.
+_HOST_MATCHER = re.compile(r"\bHost(SNI|Regexp)?\s*\(([^)]*)\)")
+_BACKTICKED = re.compile(r"`([^`]*)`")
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -175,6 +182,27 @@ class Router:
         """Whether Traefik accepted this router's configuration."""
         return self.status == STATUS_ENABLED
 
+    @property
+    def hostnames(self) -> tuple[str, ...]:
+        """The literal hostnames this router answers on, in rule order.
+
+        Only ``Host`` and ``HostSNI`` contribute: ``HostRegexp`` holds a
+        pattern rather than a name, and reporting ``^.+\\.example\\.com$`` as a
+        hostname would be worse than reporting nothing. Rules that match on
+        path or headers alone therefore yield an empty tuple.
+        """
+        if not self.rule:
+            return ()
+        found: list[str] = []
+        for kind, arguments in _HOST_MATCHER.findall(self.rule):
+            if kind == "Regexp":
+                continue
+            for host in _BACKTICKED.findall(arguments):
+                name = host.strip()
+                if name and name not in found:
+                    found.append(name)
+        return tuple(found)
+
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> Router:
         """Build from an entry of ``/api/http/routers``."""
@@ -254,16 +282,73 @@ class Certificate:
 
     common_name: str
     not_after: datetime
+    sans: tuple[str, ...] = ()
 
     @property
     def days_remaining(self) -> int:
         """Whole days until expiry; negative once the certificate has expired."""
         return (self.not_after - datetime.now(UTC)).days
 
+    def covers(self, hostname: str) -> bool:
+        """Whether this certificate is valid for ``hostname``.
+
+        Understands the one wildcard form X.509 allows: a leading ``*.``
+        matching exactly one label.
+        """
+        candidate = hostname.lower().rstrip(".")
+        for name in (self.common_name, *self.sans):
+            pattern = name.lower().rstrip(".")
+            if pattern == candidate:
+                return True
+            if pattern.startswith("*.") and "." in candidate:
+                _, _, parent = candidate.partition(".")
+                if parent == pattern[2:]:
+                    return True
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class TrafficStats:
+    """Counters for one service or entrypoint, summed over every label set.
+
+    These are lifetime totals since the process started, not rates. Home
+    Assistant's own statistics engine turns a monotonic counter into a rate
+    far better than a poller sampling one minute apart can.
+    """
+
+    requests: int = 0
+    client_errors: int = 0
+    server_errors: int = 0
+    duration_total: float = 0.0
+    duration_count: int = 0
+
+    @property
+    def errors(self) -> int:
+        """4xx and 5xx responses together."""
+        return self.client_errors + self.server_errors
+
+    @property
+    def average_duration(self) -> float | None:
+        """Mean request duration in seconds, or ``None`` with no traffic.
+
+        This is the lifetime mean, so it is a shape-of-the-service number and
+        not a "how is it doing right now" number.
+        """
+        if not self.duration_count:
+            return None
+        return self.duration_total / self.duration_count
+
+    @property
+    def error_rate(self) -> float | None:
+        """Percentage of requests that failed, or ``None`` with no traffic."""
+        if not self.requests:
+            return None
+        return self.errors / self.requests * 100
+
 
 @dataclass(frozen=True, slots=True)
 class Metrics:
-    """The handful of Prometheus values worth turning into entities.
+    """The Prometheus values worth turning into entities.
 
     Every field is optional: the metrics endpoint is opt-in, and which families
     appear depends on the Traefik configuration.
@@ -273,8 +358,34 @@ class Metrics:
     config_reloads: int | None = None
     last_reload: datetime | None = None
     certificates: tuple[Certificate, ...] = ()
+    services: dict[str, TrafficStats] = field(default_factory=dict)
+    entrypoints: dict[str, TrafficStats] = field(default_factory=dict)
+    connections_by_entrypoint: dict[str, int] = field(default_factory=dict)
 
     @property
     def nearest_expiry(self) -> Certificate | None:
         """The certificate that expires soonest, if any are known."""
         return min(self.certificates, key=lambda c: c.not_after, default=None)
+
+    def certificate_for(self, hostname: str) -> Certificate | None:
+        """The certificate covering ``hostname``, preferring the tightest match.
+
+        An exact subject beats a wildcard, so a host with its own certificate
+        does not report the expiry of the wildcard that also happens to cover
+        it.
+        """
+        matches = [cert for cert in self.certificates if cert.covers(hostname)]
+        if not matches:
+            return None
+        return min(matches, key=lambda c: (c.common_name.startswith("*."), c.not_after))
+
+    def totals(self) -> TrafficStats:
+        """Every entrypoint's traffic added together."""
+        stats = self.entrypoints.values()
+        return TrafficStats(
+            requests=sum(s.requests for s in stats),
+            client_errors=sum(s.client_errors for s in stats),
+            server_errors=sum(s.server_errors for s in stats),
+            duration_total=sum(s.duration_total for s in stats),
+            duration_count=sum(s.duration_count for s in stats),
+        )

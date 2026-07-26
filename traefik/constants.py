@@ -33,3 +33,16 @@ METRIC_CERT_EXPIRY: Final = "traefik_tls_certs_not_after"
 METRIC_OPEN_CONNECTIONS: Final = "traefik_open_connections"
 METRIC_CONFIG_RELOADS: Final = "traefik_config_reloads_total"
 METRIC_LAST_RELOAD: Final = "traefik_config_last_reload_success"
+
+# Per-service and per-entrypoint traffic. These only exist when the operator
+# left addServicesLabels / addEntryPointsLabels on (both default to true).
+METRIC_SERVICE_REQUESTS: Final = "traefik_service_requests_total"
+METRIC_SERVICE_DURATION_SUM: Final = "traefik_service_request_duration_seconds_sum"
+METRIC_SERVICE_DURATION_COUNT: Final = "traefik_service_request_duration_seconds_count"
+METRIC_ENTRYPOINT_REQUESTS: Final = "traefik_entrypoint_requests_total"
+METRIC_ENTRYPOINT_DURATION_SUM: Final = (
+    "traefik_entrypoint_request_duration_seconds_sum"
+)
+METRIC_ENTRYPOINT_DURATION_COUNT: Final = (
+    "traefik_entrypoint_request_duration_seconds_count"
+)

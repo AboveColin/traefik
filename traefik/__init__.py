@@ -20,6 +20,7 @@ from .models import (
     SectionCounts,
     ServerInfo,
     Service,
+    TrafficStats,
 )
 
 __all__ = [
@@ -37,7 +38,8 @@ __all__ = [
     "TraefikError",
     "TraefikNotFoundError",
     "TraefikResponseError",
+    "TrafficStats",
     "parse_metrics",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
